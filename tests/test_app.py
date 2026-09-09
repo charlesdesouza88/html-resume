@@ -2540,6 +2540,83 @@ def test_admin_dashboard_lists_spark_from_other_semester(monkeypatch, tmp_path):
     assert 'data-filter-value="SPARK"' in students_html
 
 
+def test_admin_dashboard_lists_spark_and_renamed_scout(monkeypatch, tmp_path):
+    """A Spark→Scout rename in S2 must not hide S1 Spark or swallow the SPARK code."""
+    from teacher_classes import add_class, save_registry, update_class
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "students.csv").write_text(_students_csv(), encoding="utf-8")
+    (data_dir / "lessons.csv").write_text(_lessons_csv(), encoding="utf-8")
+    monkeypatch.setattr(web_app, "DATA_DIR", data_dir)
+    monkeypatch.setattr(web_app, "OUT_DIR", tmp_path / "output")
+    monkeypatch.setattr(web_app, "_monthly_migration_done", True)
+    web_app.OUT_DIR.mkdir()
+    _init_user_store(monkeypatch, data_dir)
+
+    registry = {}
+    spark, err = add_class(
+        registry,
+        "Amanda",
+        turma_display="Spark",
+        class_weekdays=["Segunda-feira", "Quarta-feira"],
+        class_time_start="08:00",
+        class_time_end="09:30",
+        semester_id="2026-S1",
+    )
+    assert err is None
+    scout, err = add_class(
+        registry,
+        "Amanda",
+        turma_display="Spark",
+        class_weekdays=["Segunda-feira", "Quarta-feira"],
+        class_time_start="08:00",
+        class_time_end="09:30",
+        semester_id="2026-S2",
+    )
+    assert err is None
+    updated, err = update_class(
+        registry,
+        "Amanda",
+        scout["turma"],
+        turma_display="Scout",
+        class_weekdays=["Segunda-feira", "Quarta-feira"],
+        class_time_start="08:00",
+        class_time_end="09:30",
+        semester_id="2026-S2",
+    )
+    assert err is None
+    assert updated["turma"] == spark["turma"] == "SPARK"
+    save_registry(data_dir / "teacher_classes.json", registry)
+
+    client = web_app.app.test_client()
+    _login(client)
+    with client.session_transaction() as sess:
+        sess["review_semester"] = "2026-S2"
+        sess["review_month"] = "2026-09"
+
+    html = client.get("/?semester=2026-S2&month=2026-09").get_data(as_text=True)
+    assert "Spark" in html
+    assert "Scout" in html
+    assert "código SPARK" in html
+
+    create = client.post(
+        "/turmas/create",
+        data={
+            "teacher": "Amanda",
+            "turma_display": "Spark",
+            "class_weekday_1": "Segunda-feira",
+            "class_weekday_2": "Quarta-feira",
+            "turma_time_start": "08:00",
+            "turma_time_end": "09:30",
+        },
+        follow_redirects=True,
+    )
+    create_html = create.get_data(as_text=True)
+    assert "já está cadastrada" in create_html
+    assert "Scout" in create_html
+
+
 def test_admin_can_edit_turma(monkeypatch, tmp_path):
     data_dir = tmp_path / "data"
     data_dir.mkdir()

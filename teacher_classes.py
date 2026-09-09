@@ -229,6 +229,19 @@ def count_students_in_turma(students, teacher_name, turma):
     return total
 
 
+def _duplicate_class_message(display, existing_row):
+    """Explain a code collision, including when the class was renamed."""
+    existing_display = (
+        existing_row.get('turma_display') or existing_row.get('turma') or ''
+    ).strip()
+    if existing_display and existing_display.casefold() != display.casefold():
+        return (
+            f'A turma "{display}" já está cadastrada neste semestre como '
+            f'"{existing_display}". Edite essa turma se quiser corrigir o nome.'
+        )
+    return f'A turma "{display}" já está cadastrada neste semestre.'
+
+
 def _teacher_bucket(data, teacher_name):
     key = normalize_teacher_name(teacher_name)
     if not key:
@@ -388,7 +401,7 @@ def add_class(
     Livro/nível is chosen per student. Turma id is generated from the display name.
     Same code may exist again in a different semester.
     """
-    key = normalize_teacher_name(teacher_name)
+    key, bucket = _teacher_bucket(data, teacher_name)
     if not key:
         return None, 'Professor não identificado.'
 
@@ -417,19 +430,18 @@ def add_class(
         weekdays, time_start, time_end,
     )
 
-    bucket = data.setdefault(key, [])
-    if not isinstance(bucket, list):
+    if bucket is None or not isinstance(bucket, list):
         bucket = []
         data[key] = bucket
 
     for row in bucket:
         if not isinstance(row, dict):
             continue
-        if (row.get('turma') or '').strip() != code:
+        if (row.get('turma') or '').strip().casefold() != code.casefold():
             continue
         row_semester = _normalize_semester_id(row.get('semester_id'))
         if not row_semester or row_semester == sid:
-            return None, f'A turma "{display}" já está cadastrada neste semestre.'
+            return None, _duplicate_class_message(display, row)
 
     new_row = {
         'turma': code,

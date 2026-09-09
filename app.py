@@ -63,7 +63,7 @@ from form_ui import (HABILIDADES_CHOICES, LICAO_CONTEUDO_CHOICES,
                      normalize_habilidades, parse_time_range_from_horario,
                      storage_date_to_iso,
                      storage_time_to_input, suggest_licao_conteudo,
-                     time_from_form, turma_next_aula_map)
+                     time_from_form, turma_code_from_display, turma_next_aula_map)
 from teacher_classes import (add_class as register_teacher_class,
                              apply_registry_to_students,
                              class_display_from_student_rows,
@@ -1008,13 +1008,31 @@ def _sync_teacher_registry(user, all_students, semester_id=None):
     return added
 
 
-def _teacher_class_options(teacher_name, semester_id=None, *, all_semesters=False):
+def _turma_code_hint(display, code):
+    """Show the stored id when the visible name would generate a different code."""
+    code = (code or '').strip()
+    derived = turma_code_from_display(display)
+    if code and derived and derived.casefold() != code.casefold():
+        return code
+    return ''
+
+
+def _with_turma_code_hint(row):
+    hinted = dict(row or {})
+    hinted['code_hint'] = _turma_code_hint(
+        hinted.get('turma_display') or '',
+        hinted.get('turma') or '',
+    )
+    return hinted
+
+
+def _teacher_class_options(teacher_name, semester_id=None, *, all_semesters=False, collapse=True):
     registry = _load_teacher_class_registry()
     if all_semesters:
-        return dedupe_class_options(
-            list_for_teacher(registry, teacher_name, semester_id=None),
-            prefer_semester=_get_review_semester(),
-        )
+        rows = list_for_teacher(registry, teacher_name, semester_id=None)
+        if collapse:
+            return dedupe_class_options(rows, prefer_semester=_get_review_semester())
+        return rows
     sid = semester_id if semester_id is not None else _get_review_semester()
     return list_for_teacher(registry, teacher_name, semester_id=sid)
 
@@ -2354,9 +2372,12 @@ def dashboard():
                     'Revise dias e horário abaixo se precisar; você pode seguir usando '
                     'Alunos e Relatórios normalmente.'
                 )
-        teacher_classes = _teacher_class_options(
-            user.get('teacher_name', ''), all_semesters=True,
-        )
+        teacher_classes = [
+            _with_turma_code_hint(row)
+            for row in _teacher_class_options(
+                user.get('teacher_name', ''), all_semesters=True, collapse=False,
+            )
+        ]
         turma_list = [c['turma'] for c in teacher_classes]
         turma_count = len(teacher_classes)
     elif user and has_full_data_access(user['role']):
@@ -2751,22 +2772,30 @@ def _admin_dashboard_turmas(all_students, semester_id=None):
 
     Teachers already see every semester; admins must too, otherwise a class like
     Spark from 1º semestre disappears when the review month is in 2º semestre.
+    Keep one row per teacher + code + semester so a rename in the current
+    semester (Spark → Scout) does not hide the earlier semester's name.
     """
     sid = semester_id or _get_review_semester()
     by_key = {}
+    codes_by_teacher = set()
 
     def _upsert(code, *, display='', horario='', teacher='', semester=''):
         code = (code or '').strip()
         if not code:
             return
         teacher = (teacher or '').strip()
-        key = (normalize_teacher_name(teacher).casefold(), code.casefold())
+        row_semester = semester or sid
+        key = (
+            normalize_teacher_name(teacher).casefold(),
+            code.casefold(),
+            (row_semester or '').casefold(),
+        )
         row = by_key.setdefault(key, {
             'turma': code,
             'turma_display': code.replace('_', ' '),
             'horario': '',
             'teacher': teacher,
-            'semester_id': semester or sid,
+            'semester_id': row_semester,
         })
         if display:
             row['turma_display'] = display
@@ -2776,14 +2805,13 @@ def _admin_dashboard_turmas(all_students, semester_id=None):
             row['teacher'] = teacher
         if semester:
             row['semester_id'] = semester
+        codes_by_teacher.add((normalize_teacher_name(teacher).casefold(), code.casefold()))
+        row['code_hint'] = _turma_code_hint(row.get('turma_display') or '', row.get('turma') or '')
 
     registry = _load_teacher_class_registry()
     for teacher_name in registry:
         owner = normalize_teacher_name(teacher_name) or teacher_name
-        for entry in dedupe_class_options(
-            list_for_teacher(registry, teacher_name, semester_id=None),
-            prefer_semester=sid,
-        ):
+        for entry in list_for_teacher(registry, teacher_name, semester_id=None):
             _upsert(
                 entry['turma'],
                 display=entry.get('turma_display') or entry['turma'],
@@ -2797,13 +2825,15 @@ def _admin_dashboard_turmas(all_students, semester_id=None):
         if not code:
             continue
         teacher = (student.get('teacher') or '').strip()
-        key = (normalize_teacher_name(teacher).casefold(), code.casefold())
-        if key in by_key:
-            row = by_key[key]
-            if not row['horario'] and (student.get('horario') or '').strip():
-                row['horario'] = student.get('horario', '').strip()
-            if not row['teacher'] and teacher:
-                row['teacher'] = teacher
+        teacher_code = (normalize_teacher_name(teacher).casefold(), code.casefold())
+        if teacher_code in codes_by_teacher:
+            for row in by_key.values():
+                same_teacher = normalize_teacher_name(row.get('teacher', '')).casefold() == teacher_code[0]
+                if same_teacher and (row.get('turma') or '').strip().casefold() == code.casefold():
+                    if not row['horario'] and (student.get('horario') or '').strip():
+                        row['horario'] = student.get('horario', '').strip()
+                    if not row['teacher'] and teacher:
+                        row['teacher'] = teacher
             continue
         _upsert(
             code,
@@ -2819,6 +2849,7 @@ def _admin_dashboard_turmas(all_students, semester_id=None):
             row['turma_display'].casefold(),
             row['teacher'].casefold(),
             row['turma'],
+            row.get('semester_id') or '',
         ),
     )
 

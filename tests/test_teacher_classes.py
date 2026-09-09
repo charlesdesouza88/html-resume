@@ -110,6 +110,47 @@ def test_duplicate_turma_rejected_same_semester():
         semester_id='2026-S1',
     )
     assert err is not None
+    assert 'já está cadastrada' in err
+    assert 'Turma A2' in err
+    assert 'Turma A' in err
+
+
+def test_renamed_class_blocks_original_name_with_clear_error():
+    data = {}
+    row, err = add_class(
+        data,
+        'Amanda',
+        turma_display='Spark',
+        class_weekdays=['Segunda-feira', 'Quarta-feira'],
+        class_time_start='08:00',
+        class_time_end='09:30',
+        semester_id='2026-S2',
+    )
+    assert err is None
+    updated, err = update_class(
+        data,
+        'Amanda',
+        row['turma'],
+        turma_display='Scout',
+        class_weekdays=['Segunda-feira', 'Quarta-feira'],
+        class_time_start='08:00',
+        class_time_end='09:30',
+        semester_id='2026-S2',
+    )
+    assert err is None
+    assert updated['turma'] == 'SPARK'
+    _, err = add_class(
+        data,
+        'Amanda',
+        turma_display='Spark',
+        class_weekdays=['Segunda-feira', 'Quarta-feira'],
+        class_time_start='08:00',
+        class_time_end='09:30',
+        semester_id='2026-S2',
+    )
+    assert err is not None
+    assert 'Scout' in err
+    assert 'Spark' in err
 
 
 def test_ensure_semester_ids_infers_from_lessons():

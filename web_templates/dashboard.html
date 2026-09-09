@@ -224,7 +224,7 @@
       {% for c in admin_turmas %}
       <div class="turma-list-item">
         <div class="turma-list-item-body">
-          <span style="font-weight:900; font-size:13px;">{{ c.turma_display }}</span>
+          <span style="font-weight:900; font-size:13px;">{{ c.turma_display }}{% if c.semester_id and c.semester_id != review_semester %} — {{ semester_label(c.semester_id) }}{% endif %}</span>
           {% if c.teacher %}<span class="font-sm text-gray" style="margin-left:8px;">{{ c.teacher }}</span>{% endif %}
           {% if c.horario %}<span class="font-sm text-gray" style="margin-left:8px;">{{ c.horario }}</span>{% endif %}
         </div>

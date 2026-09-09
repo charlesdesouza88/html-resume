@@ -1079,7 +1079,10 @@ def _teacher_registered_turmas(teacher_name, semester_id=None, *, all_semesters=
 
 def _allowed_turmas(all_students, user):
     if has_full_data_access(user['role']):
-        return sorted({s.get('turma', '').strip() for s in all_students if s.get('turma', '').strip()})
+        return sorted(
+            {s.get('turma', '').strip() for s in all_students if s.get('turma', '').strip()}
+            | _registry_turma_codes()
+        )
     name = user.get('teacher_name', '')
     return sorted(
         _teacher_registered_turmas(name, all_semesters=True)
@@ -2734,21 +2737,35 @@ def _turma_display_map(rows, user):
     return labels
 
 
-def _admin_dashboard_turmas(all_students, semester_id=None):
-    """Active classes for superadmin/admin dashboard (registry + student rows)."""
+def _registry_turma_codes():
+    """Turma codes from every teacher, every semester."""
     registry = _load_teacher_class_registry()
-    by_code = {}
+    codes = set()
+    for teacher_name in registry:
+        codes |= turma_codes_for_teacher(registry, teacher_name, semester_id=None)
+    return {code for code in codes if code}
+
+
+def _admin_dashboard_turmas(all_students, semester_id=None):
+    """Active classes for superadmin/admin dashboard (registry + student rows).
+
+    Teachers already see every semester; admins must too, otherwise a class like
+    Spark from 1º semestre disappears when the review month is in 2º semestre.
+    """
     sid = semester_id or _get_review_semester()
+    by_key = {}
 
     def _upsert(code, *, display='', horario='', teacher='', semester=''):
         code = (code or '').strip()
         if not code:
             return
-        row = by_code.setdefault(code, {
+        teacher = (teacher or '').strip()
+        key = (normalize_teacher_name(teacher).casefold(), code.casefold())
+        row = by_key.setdefault(key, {
             'turma': code,
             'turma_display': code.replace('_', ' '),
             'horario': '',
-            'teacher': '',
+            'teacher': teacher,
             'semester_id': semester or sid,
         })
         if display:
@@ -2760,13 +2777,18 @@ def _admin_dashboard_turmas(all_students, semester_id=None):
         if semester:
             row['semester_id'] = semester
 
+    registry = _load_teacher_class_registry()
     for teacher_name in registry:
-        for entry in list_for_teacher(registry, teacher_name, semester_id=sid):
+        owner = normalize_teacher_name(teacher_name) or teacher_name
+        for entry in dedupe_class_options(
+            list_for_teacher(registry, teacher_name, semester_id=None),
+            prefer_semester=sid,
+        ):
             _upsert(
                 entry['turma'],
                 display=entry.get('turma_display') or entry['turma'],
                 horario=entry.get('horario') or '',
-                teacher=teacher_name,
+                teacher=owner,
                 semester=entry.get('semester_id') or sid,
             )
 
@@ -2774,25 +2796,30 @@ def _admin_dashboard_turmas(all_students, semester_id=None):
         code = (student.get('turma') or '').strip()
         if not code:
             continue
-        if code in by_code:
-            row = by_code[code]
+        teacher = (student.get('teacher') or '').strip()
+        key = (normalize_teacher_name(teacher).casefold(), code.casefold())
+        if key in by_key:
+            row = by_key[key]
             if not row['horario'] and (student.get('horario') or '').strip():
                 row['horario'] = student.get('horario', '').strip()
-            if not row['teacher'] and (student.get('teacher') or '').strip():
-                row['teacher'] = (student.get('teacher') or '').strip()
+            if not row['teacher'] and teacher:
+                row['teacher'] = teacher
             continue
-        # Only invent from students when no semester-scoped registry entry exists.
         _upsert(
             code,
             display=_class_name_from_student_row(student),
             horario=(student.get('horario') or '').strip(),
-            teacher=(student.get('teacher') or '').strip(),
+            teacher=teacher,
             semester=sid,
         )
 
     return sorted(
-        by_code.values(),
-        key=lambda row: (row['turma_display'].casefold(), row['turma']),
+        by_key.values(),
+        key=lambda row: (
+            row['turma_display'].casefold(),
+            row['teacher'].casefold(),
+            row['turma'],
+        ),
     )
 
 
@@ -2801,6 +2828,8 @@ def _turma_filters(rows, user):
     codes = {r.get('turma', '').strip() for r in rows if r.get('turma', '').strip()}
     if user and user['role'] == ROLE_TEACHER:
         codes |= _teacher_registered_turmas(user.get('teacher_name', ''), all_semesters=True)
+    elif user and has_full_data_access(user['role']):
+        codes |= _registry_turma_codes()
     codes = sorted(codes)
     labels = _turma_display_map(rows, user)
     return [{'code': code, 'label': labels.get(code, code)} for code in codes]

@@ -42,6 +42,7 @@
 <form method="post" id="student-edit-form"
       class="form-narrow{% if no_teacher_classes %} disabled-form{% endif %}"
       style="max-width: 860px;"
+      {% if is_new %}autocomplete="off"{% endif %}
       {% if not is_new %}
       action="{% if return_turma and return_month %}{{ url_for('student_edit', idx=idx, month=return_month, turma=return_turma) }}{% elif return_month %}{{ url_for('student_edit', idx=idx, month=return_month) }}{% elif return_turma %}{{ url_for('student_edit', idx=idx, turma=return_turma) }}{% else %}{{ url_for('student_edit', idx=idx) }}{% endif %}"
       {% endif %}

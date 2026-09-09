@@ -217,7 +217,11 @@
     }
   });
 
-  maybeOfferDraftRestore();
+  if (cfg.autosaveIdx === 'new') {
+    clearLocalDraft();
+  } else {
+    maybeOfferDraftRestore();
+  }
   if (autosaveUrl) setStatus('Salvamento automático ativo', 'ok');
   else setStatus('Rascunho local ativo (novo aluno)', 'local');
 

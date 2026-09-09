@@ -28,7 +28,7 @@ from compiler import (build_class_ctx, build_student_ctx, create_report_environm
                       group_by_turma, load_csv, turmas_without_lessons)
 
 from auth import (ROLE_ADMIN, ROLE_LABELS, ROLE_SUPERADMIN, ROLE_TEACHER,
-                  UserStore, can_manage_teachers, filter_extra_sessions_for_user,
+                  UserStore, can_manage_teachers,
                   filter_lessons_for_user, filter_reports_for_user,
                   filter_students_for_user, find_extra_session_global_index,
                   find_lesson_global_index, find_student_global_index,
@@ -40,7 +40,8 @@ from extra_sessions import (AUTO_AULA_EXTRA_MARKER, EXTRA_SESSION_FIELD_LABELS,
                             apply_pending_session_flag_to_students,
                             build_atendimentos_template_csv,
                             SESSION_TYPE_CHOICES,
-                            coerce_session_status_fields, display_status, is_status_ok,
+                            coerce_session_status_fields, display_status,
+                            filter_sessions_for_teacher, is_status_ok,
                             normalize_aula_extra, parse_import_csv,
                             reconcile_flagged_students, remove_sessions_for_student,
                             row_from_form, sync_student_extra_sessions)
@@ -94,17 +95,17 @@ from report_periods import (available_report_months, available_semesters,
                             filter_lessons_by_month, filter_lessons_by_semester,
                             filter_months_by_semester,
                             filter_report_files_by_month,
-                            filter_rows_by_semester_date,
                             individual_report_filename, load_snapshots,
                             month_in_semester, month_label, parse_lesson_month,
                             report_month_from_filename, save_snapshots,
-                            semester_for_month, semester_label,
+                            semester_for_date, semester_for_month, semester_label,
                             student_composite_score, upsert_month_snapshots)
 from student_transfer import (load_transfer_log, save_transfer_log,
                               students_with_transfer_aliases,
                               transfer_students, transfers_for_student)
 from student_reviews import (MONTHLY_REVIEW_FIELDS, ROSTER_FIELDS,
                              apply_upload_row, extract_roster_fields,
+                             DEFAULT_MONTHLY_VALUES,
                              load_monthly_reviews, merge_roster_for_month,
                              migrate_roster_scores_to_month,
                              rows_from_store, save_monthly_reviews,
@@ -1997,17 +1998,20 @@ def _sync_student_aula_extra_sessions(student):
 
 def _sync_extra_session_to_student_flag(session_row):
     """Keep monthly aula_extra in sync when an extra session is created or completed."""
-    if is_status_ok(session_row.get('realizado')):
-        month = _get_review_month()
-    else:
-        month = parse_lesson_month(session_row.get('date', '')) or _get_review_month()
-    if not month:
+    months = []
+    current = _get_review_month()
+    session_month = parse_lesson_month(session_row.get('date', ''))
+    for month in (current, session_month):
+        if month and month not in months:
+            months.append(month)
+    if not months:
         return
     roster = _load_roster_students()
-    merged = _merged_roster_for_month(roster, month)
-    updated = apply_pending_session_flag_to_students(merged, session_row)
-    if updated is not merged:
-        _persist_monthly_rows(updated, month)
+    for month in months:
+        merged = _merged_roster_for_month(roster, month)
+        updated = apply_pending_session_flag_to_students(merged, session_row)
+        if updated is not merged:
+            _persist_monthly_rows(updated, month)
 
 
 def _reconcile_flagged_extra_sessions(students):
@@ -2043,15 +2047,30 @@ def _save_lesson_attendance(rows):
     return True
 
 
+def _extra_session_visible_in_semester(row, semester_id):
+    """Keep undated rows, current-semester rows, and still-pending sessions."""
+    row_sid = semester_for_date(row.get('date', ''))
+    if row_sid is None or row_sid == semester_id:
+        return True
+    return not is_status_ok(row.get('realizado'))
+
+
 def _scoped_extra_sessions(semester_id=None):
     all_rows = _load_extra_sessions()
     user = _current_user()
     if not user:
         return all_rows, []
-    visible = filter_extra_sessions_for_user(all_rows, user)
+    if has_full_data_access(user['role']):
+        visible = list(all_rows)
+    else:
+        roster = _load_roster_students()
+        owned = filter_students_for_user(roster, user)
+        visible = filter_sessions_for_teacher(
+            all_rows, user.get('teacher_name', ''), owned,
+        )
     sid = semester_id if semester_id is not None else _get_review_semester()
     if sid:
-        visible = filter_rows_by_semester_date(visible, sid)
+        visible = [row for row in visible if _extra_session_visible_in_semester(row, sid)]
     return all_rows, visible
 
 
@@ -2912,10 +2931,19 @@ def student_autosave(idx):
     })
 
 
+def _blank_student_defaults(user=None):
+    """Empty student row for Novo aluno — never copy another kid's review."""
+    row = {field: '' for field in STUDENT_FIELDS}
+    row.update(DEFAULT_MONTHLY_VALUES)
+    if user and user.get('role') == ROLE_TEACHER:
+        row['teacher'] = user.get('teacher_name') or ''
+    return row
+
+
 @app.route('/students/new', methods=['GET', 'POST'])
 @login_required
 def student_new():
-    all_rows, visible = _scoped_students()
+    all_rows, _visible = _scoped_students()
     user = _current_user()
     if user and user['role'] == ROLE_TEACHER:
         _sync_teacher_registry(user, all_rows)
@@ -2935,13 +2963,7 @@ def student_new():
         _persist_student_create(all_rows, new_row, review_month)
         _sync_student_aula_extra_sessions(new_row)
         return _redirect_students(flash_ok=f'Aluno "{new_row.get("student_name", "")}" cadastrado.')
-    defaults = dict(visible[0]) if visible else dict(all_rows[0]) if all_rows else {}
-    defaults['student_name'] = ''
-    defaults['turma'] = ''
-    defaults['nivel'] = ''
-    defaults.setdefault('faltas', '0')
-    if user['role'] == ROLE_TEACHER:
-        defaults['teacher'] = user.get('teacher_name', '')
+    defaults = _blank_student_defaults(user)
     return render_template(
         'student_edit.html',
         **_student_form_context(all_rows, user, True, defaults, None),

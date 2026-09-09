@@ -36,6 +36,7 @@ def test_parse_session_type():
 def test_parse_turma_from_student_name():
     assert parse_turma_from_student_name('Jane (Comet - A)') == 'Comet - A'
     assert parse_turma_from_student_name('Jane (Comet - A) (2)') == 'Comet - A'
+    assert parse_turma_from_student_name('Vitoria - Power') == 'Power'
 
 
 def test_parse_import_csv_sample():
@@ -215,6 +216,98 @@ def test_row_matches_turma_display_and_code():
     }]
     overlay = apply_open_extra_sessions_to_students(students, sessions)
     assert overlay[0]['aula_extra'] == 'Reforço'
+
+
+def test_overlay_matches_power_session_without_teacher():
+    """Imported atendimentos often omit Professor and store 'Power - C'."""
+    from extra_sessions import apply_open_extra_sessions_to_students
+
+    students = [{
+        'teacher': 'Chuck',
+        'student_name': 'Vitoria Oliveira',
+        'turma': 'POWER',
+        'turma_display': 'Power',
+        'aula_extra': '',
+    }]
+    sessions = [{
+        'teacher': '',
+        'student_name': 'Vitoria Oliveira (Power - C)',
+        'turma': 'Power - C',
+        'session_type': 'Reforço',
+        'realizado': '',
+    }]
+    overlay = apply_open_extra_sessions_to_students(students, sessions)
+    assert overlay[0]['aula_extra'] == 'Reforço'
+
+
+def test_overlay_does_not_use_another_teachers_session():
+    from extra_sessions import apply_open_extra_sessions_to_students
+
+    students = [{
+        'teacher': 'Chuck',
+        'student_name': 'Vitoria Oliveira',
+        'turma': 'POWER',
+        'turma_display': 'Power',
+        'aula_extra': '',
+    }]
+    sessions = [{
+        'teacher': 'Bárbara',
+        'student_name': 'Vitoria Oliveira (Power - C)',
+        'turma': 'Power - C',
+        'session_type': 'Reforço',
+        'realizado': '',
+    }]
+    overlay = apply_open_extra_sessions_to_students(students, sessions)
+    assert overlay[0]['aula_extra'] == ''
+
+
+def test_overlay_matches_name_dash_turma_label():
+    from extra_sessions import apply_open_extra_sessions_to_students
+
+    students = [{
+        'teacher': 'Chuck',
+        'student_name': 'Vitoria',
+        'turma': 'POWER',
+        'turma_display': 'Power',
+        'aula_extra': '',
+    }]
+    sessions = [{
+        'teacher': 'Chuck',
+        'student_name': 'Vitoria - Power',
+        'turma': '',
+        'session_type': 'Reposição',
+        'realizado': '',
+    }]
+    overlay = apply_open_extra_sessions_to_students(students, sessions)
+    assert overlay[0]['aula_extra'] == 'Reposição'
+
+
+def test_filter_sessions_for_teacher_includes_unassigned_roster_match():
+    from extra_sessions import filter_sessions_for_teacher
+
+    students = [{
+        'teacher': 'Chuck',
+        'student_name': 'Vitoria Oliveira',
+        'turma': 'POWER',
+        'turma_display': 'Power',
+    }]
+    sessions = [
+        {
+            'teacher': '',
+            'student_name': 'Vitoria Oliveira (Power - C)',
+            'turma': 'Power - C',
+            'session_type': 'Reforço',
+        },
+        {
+            'teacher': 'Amanda',
+            'student_name': 'Vitoria Oliveira (Power - C)',
+            'turma': 'Power - C',
+            'session_type': 'Reforço',
+        },
+    ]
+    visible = filter_sessions_for_teacher(sessions, 'Chuck', students)
+    assert len(visible) == 1
+    assert visible[0]['teacher'] == ''
 
 
 def test_apply_open_extra_sessions_ignores_completed():

@@ -79,13 +79,22 @@ def parse_session_type(assuntos):
     return 'Reforço'
 
 
+_DASH_TURMA_RE = re.compile(
+    r'\s+-\s+([A-Za-zÀ-ÿ]+(?:\s*-\s*[A-Za-z0-9]+)?)\s*$',
+    re.IGNORECASE,
+)
+
+
 def parse_turma_from_student_name(student_name):
-    """Extract turma hint from names like 'Ana (Comet - A)'."""
+    """Extract turma hint from names like 'Ana (Comet - A)' or 'Ana - Power'."""
     name = (student_name or '').strip()
     match = re.search(r'\(([^)]+)\)\s*(?:\(\d+\))?$', name)
     if match:
         return match.group(1).strip()
     match = re.search(r'\(([^)]+)\)', name)
+    if match:
+        return match.group(1).strip()
+    match = _DASH_TURMA_RE.search(name)
     if match:
         return match.group(1).strip()
     return ''
@@ -318,18 +327,27 @@ def _student_identity_key(student_name='', turma='', teacher=''):
 def _display_name_key(name):
     cleaned = clean_student_display_name(name).casefold()
     if ' (' in cleaned:
-        return cleaned.split(' (', 1)[0].strip()
+        cleaned = cleaned.split(' (', 1)[0].strip()
+    cleaned = _DASH_TURMA_RE.sub('', cleaned).strip()
     return cleaned
+
+
+def _turma_head(value):
+    text = (value or '').strip().casefold()
+    if not text:
+        return ''
+    return re.split(r'[\s\-]+', text, maxsplit=1)[0]
 
 
 def _turmas_compatible(row, student):
     """Match extra-session turma to a student code or display name.
 
-    Spreadsheet imports store labels like 'Comet - A' while the roster uses
-    codes such as COMET plus turma_display 'Comet'. Exact code match still
-    wins when both sides use the same token.
+    Spreadsheet imports store labels like 'Comet - A' or 'Power - C' while the
+    roster uses codes such as COMET / POWER plus turma_display 'Comet' / 'Power'.
     """
     extra = (row.get('turma') or '').strip().casefold()
+    if not extra:
+        extra = parse_turma_from_student_name(row.get('student_name', '')).casefold()
     code = (student.get('turma') or '').strip().casefold()
     display = (student.get('turma_display') or '').strip().casefold()
     if not extra or not code:
@@ -341,19 +359,48 @@ def _turmas_compatible(row, student):
             continue
         if extra.startswith(token + ' ') or extra.startswith(token + '-') or extra.startswith(token + ' -'):
             return True
+    extra_head = _turma_head(extra)
+    if extra_head and extra_head in {_turma_head(code), _turma_head(display)}:
+        return True
     return False
+
+
+def _teachers_compatible(row, student):
+    """Imported rows often omit Professor; treat blank as a wildcard."""
+    row_teacher = normalize_teacher_name(row.get('teacher', '')).casefold()
+    student_teacher = normalize_teacher_name(student.get('teacher', '')).casefold()
+    if not row_teacher or not student_teacher:
+        return True
+    return row_teacher == student_teacher
 
 
 def _row_matches_student(row, student):
     if _display_name_key(row.get('student_name')) != _display_name_key(student.get('student_name')):
         return False
-    row_teacher = normalize_teacher_name(row.get('teacher', '')).casefold()
-    student_teacher = normalize_teacher_name(student.get('teacher', '')).casefold()
-    if row_teacher != student_teacher:
+    if not _teachers_compatible(row, student):
         return False
     # Prefer matching on turma when both sides declare one — two students with
     # the same name under the same teacher but different turmas must not mix.
     return _turmas_compatible(row, student)
+
+
+def filter_sessions_for_teacher(sessions, teacher_name, students):
+    """Teacher sees own sessions plus unassigned rows that match their roster."""
+    key = normalize_teacher_name(teacher_name).casefold()
+    if not key:
+        return []
+    owned = list(students or [])
+    visible = []
+    for row in sessions or []:
+        row_teacher = normalize_teacher_name(row.get('teacher', '')).casefold()
+        if row_teacher == key:
+            visible.append(row)
+            continue
+        if row_teacher:
+            continue
+        if any(_row_matches_student(row, student) for student in owned):
+            visible.append(row)
+    return visible
 
 
 def remove_sessions_for_student(rows, student):

@@ -678,6 +678,79 @@ def test_new_extra_session_flags_student_on_alunos_page(monkeypatch, tmp_path):
     assert 'data-aula-extra="Reposição"' in html
 
 
+def test_teacher_power_extra_session_shows_in_alunos_filter(monkeypatch, tmp_path):
+    """Teacher Alunos filter must show Power kids with imported reforço rows."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    csv = (
+        "teacher,turma,turma_display,nivel,horario,student_name,participacao,comportamento,"
+        "speaking,listening,foco,writing,reading,gramatica,trabalho_equipe,organizacao,"
+        "pontualidade,respeito_regras,faltas,missed_aulas,aula_extra,feedback_participacao,"
+        "feedback_foco,feedback_trabalho_equipe,recomendacoes,observacao\n"
+        "Chuck,POWER,Power,Kids Book 3,Thu 15:30,Vitoria Oliveira,3,3,3,3,3,3,3,3,3,3,3,3,"
+        "0,,,Good,Focus,Team,,\n"
+        "Chuck,POWER,Power,Kids Book 3,Thu 15:30,Kaio Vieira,3,3,3,3,3,3,3,3,3,3,3,3,"
+        "0,,,,,,,\n"
+    )
+    (data_dir / "students.csv").write_text(csv, encoding="utf-8")
+    (data_dir / "lessons.csv").write_text(
+        "turma,aula_num,date,licao_conteudo,atividade_extra,habilidades\n"
+        "POWER,1,12/08/2026,Lesson Aug,,\n",
+        encoding="utf-8",
+    )
+    (data_dir / "student_monthly_reviews.json").write_text("[]", encoding="utf-8")
+
+    monkeypatch.setattr(web_app, "DATA_DIR", data_dir)
+    monkeypatch.setattr(web_app, "OUT_DIR", tmp_path / "output")
+    monkeypatch.setattr(web_app, "db_store", None)
+    monkeypatch.setattr(web_app, "MONTHLY_REVIEWS_PATH", data_dir / "student_monthly_reviews.json")
+    monkeypatch.setattr(web_app, "_monthly_migration_done", True)
+    web_app.OUT_DIR.mkdir()
+    _init_teacher_store(monkeypatch, data_dir)
+    _seed_teacher_classes(data_dir, "Chuck", ("POWER", "Power"))
+
+    web_app._save_extra_sessions([
+        {
+            "teacher": "",
+            "student_name": "Vitoria Oliveira (Power - C)",
+            "turma": "Power - C",
+            "date": "25/05/2026",
+            "horario": "15:30",
+            "turno": "Tarde",
+            "session_type": "Reforço",
+            "assuntos": "Reforço -",
+            "observacao": "",
+            "contatado": "",
+            "marcado": "",
+            "realizado": "",
+        },
+        {
+            "teacher": "Chuck",
+            "student_name": "Kaio Vieira - Power",
+            "turma": "",
+            "date": "",
+            "horario": "",
+            "turno": "Tarde",
+            "session_type": "Reposição",
+            "assuntos": "Reposição",
+            "observacao": "",
+            "contatado": "",
+            "marcado": "",
+            "realizado": "",
+        },
+    ])
+
+    client = web_app.app.test_client()
+    _login(client, email="teacher@test.local", password="teachpass")
+    html = client.get("/students?month=2026-08").get_data(as_text=True)
+    assert 'data-turma="POWER"' in html
+    assert 'data-aula-extra="Reforço"' in html
+    assert 'data-aula-extra="Reposição"' in html
+    extra_html = client.get("/extra-sessions").get_data(as_text=True)
+    assert "Vitoria Oliveira" in extra_html
+    assert "Kaio Vieira" in extra_html
+
+
 def test_upload_page_shows_csv_template_preview(monkeypatch, tmp_path):
     monkeypatch.setattr(web_app, "DATA_DIR", tmp_path / "data")
     monkeypatch.setattr(web_app, "OUT_DIR", tmp_path / "output")
@@ -1465,6 +1538,36 @@ def test_teacher_new_student_form_lists_dashboard_turmas(monkeypatch, tmp_path):
     assert "MASTER" in html
     assert "criar classe" not in html.lower()
     assert "KIDS 1" in html
+
+
+def test_student_new_form_does_not_copy_existing_student(monkeypatch, tmp_path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "students.csv").write_text(_students_csv(), encoding="utf-8")
+    (data_dir / "lessons.csv").write_text(_lessons_csv(), encoding="utf-8")
+
+    monkeypatch.setattr(web_app, "DATA_DIR", data_dir)
+    monkeypatch.setattr(web_app, "OUT_DIR", tmp_path / "output")
+    monkeypatch.setattr(web_app, "MONTHLY_REVIEWS_PATH", data_dir / "student_monthly_reviews.json")
+    monkeypatch.setattr(web_app, "_monthly_migration_done", True)
+    web_app.OUT_DIR.mkdir()
+    _init_user_store(monkeypatch, data_dir)
+
+    client = web_app.app.test_client()
+    _login(client)
+    html = client.get("/students/new").get_data(as_text=True)
+
+    assert 'name="student_name" value=""' in html
+    assert 'id="val-speaking" value="3"' in html
+    assert 'id="val-listening" value="3"' in html
+    assert 'id="val-gramatica" value="3"' in html
+    assert 'name="faltas" value="0"' in html
+    assert 'name="missed_aulas" value=""' in html
+    assert "Practice speaking" not in html
+    assert ">Good</textarea>" not in html
+    assert ">Focus</textarea>" not in html
+    assert 'value="Reposição" selected' not in html
+    assert 'autocomplete="off"' in html
 
 
 def test_student_new_requires_turma(monkeypatch, tmp_path):
